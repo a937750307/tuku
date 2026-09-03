@@ -1,0 +1,300 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>悦目图库</title>
+<script>
+  // 主题防闪烁：首帧前应用已保存的主题
+  (function () {
+    var t = localStorage.getItem("ym_theme") || "auto";
+    var r = t === "auto" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : t;
+    document.documentElement.dataset.theme = r;
+  })();
+</script>
+<style>
+  :root {
+    --bg:#fafafa; --card:#fff; --fg:#222; --sub:#888;
+    --line:#eee; --imgph:#e8e8e8;
+  }
+  [data-theme=dark] {
+    --bg:#151517; --card:#1d1d20; --fg:#e8e8e8; --sub:#8a8a90;
+    --line:#2a2a2e; --imgph:#242428;
+  }
+  *{box-sizing:border-box;margin:0}
+  html{scrollbar-gutter:stable}
+  body{font:14px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--fg);transition:background .2s,color .2s}
+  header{position:relative;position:sticky;top:0;z-index:9;background:var(--card);
+    border-bottom:1px solid var(--line);padding:12px 20px 10px;text-align:center}
+  h1{font-size:17px;font-weight:600;letter-spacing:4px;margin-bottom:10px}
+  #tools{position:absolute;top:10px;right:12px;display:flex;gap:6px}
+  button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);
+    padding:4px 11px;border-radius:999px;font-size:12px;cursor:pointer;white-space:nowrap}
+  button:hover{border-color:var(--sub)}
+  #nav{display:flex;flex-wrap:wrap;justify-content:center;gap:6px}
+  #nav button.on{background:var(--fg);border-color:var(--fg);color:var(--bg)}
+  main{display:block}
+  #grid{columns:220px;column-gap:10px;padding:14px 20px;max-width:1800px;margin:0 auto}
+  .card{break-inside:avoid;margin-bottom:10px;border-radius:4px;overflow:hidden;
+    background:var(--imgph);cursor:zoom-in;position:relative}
+  .card img{display:block;width:100%;height:auto;transition:transform .3s}
+  .card:hover img{transform:scale(1.04)}
+  #sent{height:1px}
+  #tip{padding:18px;text-align:center;color:var(--sub);font-size:12px}
+  body.lb-open{overflow:hidden}
+  #lightbox{position:fixed;inset:0;z-index:99;background:rgba(0,0,0,.93);
+    display:flex;align-items:center;justify-content:center}
+  #lightbox[hidden]{display:none}
+  #lbLink{display:flex;max-width:94vw;max-height:92vh}
+  #lbImg{max-width:94vw;max-height:92vh;object-fit:contain}
+  #lbMeta{position:fixed;top:0;left:0;right:0;text-align:center;font-size:13px;color:#ddd;
+    padding:10px 120px;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #lightbox button{position:fixed;background:none;border:0;color:#eee}
+  #lbClose{top:8px;right:14px;font-size:24px;padding:2px 10px}
+  #lbPrev,#lbNext{top:50%;transform:translateY(-50%);font-size:30px;padding:8px 13px;opacity:.55}
+  #lbPrev{left:6px}#lbNext{right:6px}
+  #lightbox button:hover{opacity:1;background:rgba(255,255,255,.14)}
+</style>
+</head>
+<body>
+<header>
+  <h1>悦目图库</h1>
+  <div id="tools">
+    <button id="themeBtn" title="切换主题（自动/深色/浅色）">主题</button>
+    <button id="flowBtn" title="开启后停止预加载下一屏图片，节省流量">省流量</button>
+  </div>
+  <nav id="nav"></nav>
+</header>
+<main>
+  <div id="grid"></div>
+  <div id="sent"></div>
+  <div id="tip">加载中</div>
+</main>
+<div id="lightbox" hidden>
+  <span id="lbMeta"></span>
+  <a id="lbLink" target="_blank" rel="noopener"><img id="lbImg" alt=""></a>
+  <button id="lbPrev" title="上一张 (←)">←</button>
+  <button id="lbNext" title="下一张 (→)">→</button>
+  <button id="lbClose" title="关闭 (Esc)">×</button>
+</div>
+
+<script>
+  var grid = document.getElementById("grid"),
+      nav = document.getElementById("nav"),
+      tip = document.getElementById("tip");
+  var cur = "", off = 0, end = true, busy = false, curTotal = 0,
+      seq = 0,
+      nextD = null, nextOff = 0;
+
+  // 同域名留空；跨域填 Workers 域名，如 "https://yuemu-api.xxx.workers.dev"
+  var API_BASE = "tuku-worker.937750307.workers.dev";
+
+  function get(u) { return fetch(API_BASE + u).then(function (r) { return r.json(); }); }
+
+  /* ---------- 主题 ---------- */
+  var theme = localStorage.getItem("ym_theme") || "auto";
+  var themeLabel = { auto: "主题:自动", dark: "主题:深色", light: "主题:浅色" };
+  function applyTheme() {
+    var r = theme === "auto"
+      ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : theme;
+    document.documentElement.dataset.theme = r;
+  }
+  document.getElementById("themeBtn").textContent = themeLabel[theme];
+  document.getElementById("themeBtn").onclick = function () {
+    theme = { auto: "dark", dark: "light", light: "auto" }[theme];
+    localStorage.setItem("ym_theme", theme);
+    applyTheme();
+    this.textContent = themeLabel[theme];
+  };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+    if (theme === "auto") applyTheme();
+  });
+
+  /* ---------- 省流量模式（关闭预加载） ---------- */
+  var flow = localStorage.getItem("ym_flow") === "1";
+  var flowBtn = document.getElementById("flowBtn");
+  var io = null;
+  function watchSentinel() {
+    if (io) io.disconnect();
+    io = new IntersectionObserver(function (e) {
+      if (e[0].isIntersecting) more();
+    }, { rootMargin: flow ? "0px" : "1400px" });   // 省流量:贴底才加载,不提前
+    io.observe(document.getElementById("sent"));
+  }
+  function setFlow(on) {
+    flow = on;
+    localStorage.setItem("ym_flow", on ? "1" : "0");
+    flowBtn.textContent = "省流量:" + (on ? "开" : "关");
+    watchSentinel();
+  }
+  setFlow(flow);
+
+  /* ---------- 数据加载 ---------- */
+  function append(items) {
+    var frag = document.createDocumentFragment();
+    items.forEach(function (it) {
+      var u = it.u;
+      var card = document.createElement("div"); card.className = "card";
+      var im = document.createElement("img");
+      im.src = u; im.loading = "lazy"; im.decoding = "async";
+      im.alt = decodeURIComponent(u.split("/").pop());
+      // 用真实宽高占位，加载前后高度一致，避免瀑布流滚动跳动
+      card.style.aspectRatio = (it.w > 0 && it.h > 0) ? it.w + "/" + it.h : "4/3";
+      card.append(im); frag.append(card);
+    });
+    grid.append(frag);
+  }
+  function refreshTip() {
+    tip.textContent = end
+      ? (grid.children.length ? "" : "该分类暂无图片") : "";
+  }
+  async function more() {
+    if (busy || end || !cur) return;
+    var s = seq;
+    busy = true;
+    if (!grid.children.length) tip.textContent = "加载中";
+    var d;
+    if (nextD && nextOff === off) { d = nextD; nextD = null; }
+    else {
+      try { d = await get("/api/images?cat=" + encodeURIComponent(cur)
+        + "&offset=" + off + "&limit=60"); }
+      catch (e) { tip.textContent = "加载失败，请重试"; busy = false; return; }
+    }
+    if (s !== seq) return;                 // 期间已切换分类，丢弃本次结果
+    off += d.items.length;
+    curTotal = d.total;
+    end = off >= curTotal;
+    append(d.items);
+    busy = false;
+    refreshTip();
+    prefetch();
+    syncHash();
+  }
+  async function prefetch() {              // 提前取下一页并预热首屏，省流量时禁用
+    if (end || busy || flow) return;
+    var c = cur, o = off;
+    try {
+      var d = await get("/api/images?cat=" + encodeURIComponent(c)
+        + "&offset=" + o + "&limit=60");
+      if (c !== cur || o !== off) return;  // 期间已切换分类，丢弃
+      nextD = d; nextOff = o;
+      d.items.slice(0, 3).forEach(function (it) { new Image().src = it.u; });
+    } catch (e) {}
+  }
+  function loadAll() {
+    seq++;
+    grid.innerHTML = ""; off = 0; end = false; busy = false;
+    nextD = null; nextOff = 0;
+  }
+
+  /* ---------- URL 状态同步：hash 记录 分类+已加载张数 ---------- */
+  function syncHash() {
+    var p = new URLSearchParams();
+    p.set("cat", cur);
+    p.set("n", grid.children.length);
+    history.replaceState(null, "", "#" + p.toString());
+  }
+  async function loadUntil(n) {
+    while (grid.children.length < n && !end) {
+      var before = grid.children.length;
+      await more();
+      if (grid.children.length === before) break;   // 加载失败则停止，避免死循环
+    }
+    var els = grid.children;
+    if (!els.length) return;
+    var el = els[Math.min(n, els.length) - 1];
+    var im = el.querySelector("img");
+    function go() { el.scrollIntoView(); }
+    if (im.decode) im.decode().then(go, go);
+    else if (im.complete && im.naturalHeight) go();
+    else go();
+  }
+
+  /* ---------- 分类 ---------- */
+  async function pick(name, btn) {
+    loadAll();
+    cur = name;
+    nav.querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", b === btn);
+    });
+    await more();
+  }
+  (async function init() {
+    var d = await get("/api/categories");
+    if (!d.categories.length) { tip.textContent = "暂无图片"; return; }
+    d.categories.forEach(function (c) {
+      var b = document.createElement("button");
+      b.textContent = c.name + " (" + c.count + ")";
+      b.dataset.name = c.name;
+      b.onclick = function () { pick(c.name, b); };
+      nav.append(b);
+    });
+    var p = new URLSearchParams(location.hash.slice(1));
+    var hc = p.get("cat");
+    var hit = d.categories.filter(function (c) { return c.name === hc; });
+    var target = hit.length ? hit[0].name : d.categories[0].name;
+    var btn = Array.prototype.find.call(nav.children, function (b) {
+      return b.dataset.name === target;
+    });
+    await pick(target, btn);
+    var n = Math.max(0, parseInt(p.get("n") || "0", 10) || 0);
+    if (n) await loadUntil(n);
+  })();
+
+  /* ---------- 灯箱 ---------- */
+  var lb = document.getElementById("lightbox"),
+      lbImg = document.getElementById("lbImg"),
+      lbLink = document.getElementById("lbLink"),
+      lbMeta = document.getElementById("lbMeta");
+  var lbI = 0;
+  function renderLB() {
+    var cs = grid.children;
+    lbI = Math.min(Math.max(lbI, 0), cs.length - 1);
+    var im = cs[lbI].querySelector("img");
+    lbImg.src = im.src; lbImg.alt = im.alt;
+    lbLink.href = im.src;
+    lbMeta.textContent = im.alt + " · " + (lbI + 1) + " / " + curTotal;
+  }
+  function openLB(i) {
+    if (!grid.children.length) return;
+    lbI = Math.min(Math.max(i, 0), grid.children.length - 1);
+    renderLB();
+    lb.hidden = false;
+    document.body.classList.add("lb-open");
+  }
+  function closeLB() {
+    lb.hidden = true;
+    document.body.classList.remove("lb-open");
+  }
+  async function moveLB(d) {
+    var i = lbI + d, cs = grid.children;
+    if (i < 0) { lbI = 0; renderLB(); return; }
+    if (i >= cs.length) {
+      if (end || busy) return;                 // 已到末尾
+      await more();                            // 翻页时补加载下一页
+      if (i >= grid.children.length) { lbI = grid.children.length - 1; renderLB(); return; }
+    }
+    lbI = i;
+    renderLB();
+  }
+  grid.addEventListener("click", function (e) {
+    var c = e.target.closest(".card");
+    if (c) openLB(Array.prototype.indexOf.call(grid.children, c));
+  });
+  lb.addEventListener("click", function (e) {
+    if (e.target === lb) closeLB();            // 点背景关闭
+  });
+  document.getElementById("lbClose").onclick = closeLB;
+  document.getElementById("lbPrev").onclick = function () { moveLB(-1); };
+  document.getElementById("lbNext").onclick = function () { moveLB(1); };
+  document.addEventListener("keydown", function (e) {
+    if (lb.hidden) return;
+    if (e.key === "Escape") closeLB();
+    else if (e.key === "ArrowLeft") moveLB(-1);
+    else if (e.key === "ArrowRight") moveLB(1);
+  });
+</script>
+</body>
+</html>
