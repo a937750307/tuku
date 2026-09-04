@@ -63,6 +63,24 @@
   #lightbox button:hover{opacity:1;background:rgba(255,255,255,.14)}
   #lightbox.zoom #lbImg{cursor:zoom-out}
   #lightbox.zoom #lbImg:active{cursor:grabbing}
+  /* ---------- 访问密码门 ---------- */
+  #gate{position:fixed;inset:0;z-index:200;background:var(--bg);
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  #gate[hidden]{display:none}
+  .gate-box{width:min(320px,92vw);text-align:center}
+  .gate-box h1{font-size:18px;font-weight:600;letter-spacing:6px;margin-bottom:24px}
+  .gate-box p{color:var(--sub);font-size:12px;margin-bottom:14px}
+  #pwd{width:100%;padding:10px 14px;font:inherit;text-align:center;
+    border:1px solid var(--line);background:var(--card);color:var(--fg);
+    border-radius:8px;outline:none}
+  #pwd:focus{border-color:var(--sub)}
+  #pwdBtn{width:100%;margin-top:14px;padding:9px;border-radius:8px;
+    border:1px solid var(--fg);background:var(--fg);color:var(--bg);
+    font-size:14px;cursor:pointer}
+  #pwdBtn:hover{opacity:.85}
+  #pwdBtn:disabled{opacity:.5;cursor:default}
+  #pwdErr{margin-top:10px;font-size:12px;color:#d33;min-height:16px}
+  [data-theme=dark] #pwdErr{color:#f88}
 </style>
 </head>
 <body>
@@ -78,6 +96,15 @@
   <div id="sent"></div>
   <div id="tip">加载中</div>
 </main>
+<div id="gate" hidden>
+  <div class="gate-box">
+    <h1>悦目图库</h1>
+    <p>请输入访问密码</p>
+    <input id="pwd" type="password" placeholder="密码" autocomplete="current-password">
+    <button id="pwdBtn" type="button">进入</button>
+    <div id="pwdErr"></div>
+  </div>
+</div>
 <div id="lightbox" hidden>
   <span id="lbMeta"></span>
   <div id="lbLink"><img id="lbImg" alt="" draggable="false"></div>
@@ -97,7 +124,60 @@
   // 同域名留空；跨域填 Workers 域名，如 "https://yuemu-api.xxx.workers.dev"
   var API_BASE = "https://tukuworker.937788.xyz";
 
-  function get(u) { return fetch(API_BASE + u).then(function (r) { return r.json(); }); }
+  /* ---------- 访问口令 ---------- */
+  var AUTH = localStorage.getItem("ym_auth") || "";
+  var gate = document.getElementById("gate");
+  function requireLogin() {
+    AUTH = "";
+    localStorage.removeItem("ym_auth");
+    gate.hidden = false;
+    var i = document.getElementById("pwd");
+    if (i) setTimeout(function () { i.focus(); }, 50);
+  }
+  function get(u, o) {
+    var opt = o || {};
+    opt.headers = opt.headers || {};
+    if (AUTH) opt.headers["X-Auth-Token"] = AUTH;
+    if (o && o.body) opt.headers["Content-Type"] = "application/json";
+    return fetch(API_BASE + u, opt).then(function (r) {
+      if (r.status === 401) { requireLogin(); throw new Error("unauthorized"); }
+      return r.json();
+    });
+  }
+  // 图片地址：绝对地址（R2 直链）直接用，相对地址（/img 代理）拼接 API 域名
+  function imgURL(u) {
+    return /^https?:/i.test(u) ? u : API_BASE + u;
+  }
+  function doLogin() {
+    var i = document.getElementById("pwd"), err = document.getElementById("pwdErr");
+    var v = i.value || "";
+    if (!v) { err.textContent = "请输入密码"; return; }
+    var btn = document.getElementById("pwdBtn");
+    err.textContent = ""; btn.disabled = true;
+    fetch(API_BASE + "/api/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pwd: v })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.ok && d.token) {
+        AUTH = d.token;
+        localStorage.setItem("ym_auth", d.token);
+        location.reload();               // 刷新后带着令牌正常进入
+      } else {
+        err.textContent = (d && d.msg) || "密码错误";
+        i.value = "";
+        i.focus();
+      }
+    }).catch(function () {
+      err.textContent = "网络错误，请重试";
+    }).then(function () {
+      btn.disabled = false;
+    });
+  }
+  document.getElementById("pwdBtn").onclick = doLogin;
+  document.getElementById("pwd").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") doLogin();
+  });
 
   /* ---------- 主题 ---------- */
   var theme = localStorage.getItem("ym_theme") || "auto";
@@ -134,12 +214,11 @@
   function append(items) {
     var frag = document.createDocumentFragment();
     items.forEach(function (it) {
-      var u = it.u;
       var card = document.createElement("div"); card.className = "card";
       var im = document.createElement("img");
-      im.src = u; im.loading = "lazy"; im.decoding = "async";
+      im.src = imgURL(it.u); im.loading = "lazy"; im.decoding = "async";
       im.draggable = false;
-      im.alt = decodeURIComponent(u.split("/").pop());
+      im.alt = it.n || it.u.split("/").pop().split("?")[0];
       // 用真实宽高占位，加载前后高度一致，避免瀑布流滚动跳动
       card.style.aspectRatio = (it.w > 0 && it.h > 0) ? it.w + "/" + it.h : "4/3";
       card.append(im); frag.append(card);
@@ -180,7 +259,7 @@
         + "&offset=" + o + "&limit=60");
       if (c !== cur || o !== off) return;  // 期间已切换分类，丢弃
       nextD = d; nextOff = o;
-      d.items.slice(0, 3).forEach(function (it) { new Image().src = it.u; });
+      d.items.slice(0, 3).forEach(function (it) { new Image().src = imgURL(it.u); });
     } catch (e) {}
   }
   function loadAll() {
@@ -221,8 +300,10 @@
     });
     await more();
   }
-  (async function init() {
-    var d = await get("/api/categories");
+  async function boot() {
+    var d;
+    try { d = await get("/api/categories"); }
+    catch (e) { return; }                        // 401：已弹出口令页；其他失败静默
     if (!d.categories.length) { tip.textContent = "暂无图片"; return; }
     d.categories.forEach(function (c) {
       var b = document.createElement("button");
@@ -241,7 +322,22 @@
     await pick(target, btn);
     var n = Math.max(0, parseInt(p.get("n") || "0", 10) || 0);
     if (n) await loadUntil(n);
-  })();
+  }
+  // 先探测是否需要口令：公开模式直接进入，锁定模式校验本地令牌或弹口令页
+  async function initEntry() {
+    var st = { locked: true };
+    try { st = await fetch(API_BASE + "/api/status").then(function (r) { return r.json(); }); }
+    catch (e) { st = { locked: true }; }       // 状态探测失败时按需口令处理
+    if (!st || !st.locked) {
+      AUTH = ""; localStorage.removeItem("ym_auth");
+      boot();
+    } else if (AUTH) {
+      boot();                                  // 令牌无效时首个请求 401 会弹出口令页
+    } else {
+      requireLogin();
+    }
+  }
+  initEntry();
 
   /* ---------- 灯箱 ---------- */
   var lb = document.getElementById("lightbox"),
